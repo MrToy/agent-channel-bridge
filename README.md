@@ -20,61 +20,37 @@
 | 📎 发代码/文件 | 图片自动转 base64、文件自动编码发送给 Agent |
 | 👥 多 Agent 管理 | 一个机器人可以对接多个 Agent，不同群聊路由到不同 Agent |
 
-## ⚙️ 原理
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  QQ                                                        │
-│  你发消息 → NapCat (WebSocket :3001)                      │
-└──────────────────┬───────────────────────────────────────┘
-                   │ OneBot v11 协议
-                   ▼
-┌──────────────────────────────────────────────────────────┐
-│  Agent Channel Bridge (bridge.py)                         │
-│                                                          │
-│  1. 收到消息 → 解析类型（私聊/群聊/@）                      │
-│  2. 路由匹配 → 找到对应的 Worker                          │
-│  3. 打断发送 → Ctrl-C 当前任务 + send-keys 新消息           │
-│  4. 监听回复 → 累积 agent_message_chunk → step_finish 完整 │
-│  5. 回复发回 → WS → NapCat → QQ                           │
-└──────────────────┬───────────────────────────────────────┘
-                   │ ACP 协议 (JSON-RPC over stdio)
-                   ▼
-┌──────────────────────────────────────────────────────────┐
-│  AI Coding Agent (OpenCode / Claude Code 等)              │
-│                                                          │
-│  - 独立 tmux 进程，每个 Worker 一个                        │
-│  - 收到消息后自动执行（读文件、写代码、跑测试...）           │
-│  - 实时流式回复，bridge 自动收集完整回复                     │
-└──────────────────────────────────────────────────────────┘
-```
-
-### 核心技术：ACP 协议
-
-ACP（Agent Communication Protocol）是一个 JSON-RPC over stdio 的协议，让外部程序能和 AI Agent 双向通信：
-
-| 方法 | 作用 |
-|------|------|
-| `initialize` | 握手，声明客户端能力 |
-| `session/create` | 创建新对话会话 |
-| `session/resume` | 恢复已有对话会话 |
-| `prompt` | 发送消息给 Agent（带图片/文件） |
-| `tool/execute` | 直接让 Agent 执行工具 |
-| `session/update` ← | **Agent 主动推送**（流式回复的关键） |
-
-**流式回复机制：**
-1. Bridge 发送 `prompt` 后，Agent 开始执行
-2. Agent 每生成一段文本，就发一个 `session/update`（`agent_message_chunk`）
-3. Agent 执行完毕，发 `step_finish`
-4. Bridge 收集所有 chunk 拼成完整回复，发回 QQ
-
-### Session 持久化
-
-- Worker 的会话映射保存在 `work_dir/.bridge_sessions.json`
-- Bridge 重启时会自动恢复所有 session（`session/resume`）
-- 通过 `/reset` 命令可以重置指定 session
-
 ## 📖 使用方式
+
+### ⚡ 推荐：用 AI 帮你配置（最快）
+
+Bridge 是一个 AI 工具，那当然**用 AI 来配置它**最方便。把下面这段 prompt 发给你的 AI coding agent（OpenCode、Claude Code 等）：
+
+<details>
+<summary>📋 点击展开 AI 配置 Prompt</summary>
+
+> 请帮我完成 Agent Channel Bridge 的配置和启动。
+>
+> **任务：**
+>
+> 1. 从 https://github.com/MrToy/agent-channel-bridge 克隆项目
+> 2. 安装 Python 依赖（websockets、pyyaml）
+> 3. 检查 NapCat 是否已部署并运行在 localhost:3001
+> 4. 编辑 config.yaml，填入我的 QQ 信息：
+>    - 机器人 QQ 号：**YOUR_BOT_QQ**
+>    - 机器人名字：**YOUR_BOT_NAME**
+>    - 管理员 QQ 号：**YOUR_ADMIN_QQ**
+>    - 需要对接的群号：**YOUR_GROUP_IDS**（多个群用逗号分隔）
+>    - Agent 工作目录：**YOUR_AGENT_WORK_DIR**
+>    - Agent 启动命令：**opencode acp**（或 claude --acp --stdio）
+> 5. 启动 bridge（推荐用 tmux）
+> 6. 验证启动成功：给我发一条测试消息
+>
+> 如果 NapCat 还没部署，请帮我部署 NapCat Docker 容器并完成 QQ 登录。
+
+</details>
+
+把上面方括号里的内容替换成你的实际信息，发给你的 AI Agent 就行。如果没有现成的 AI Agent，也可以用 ChatGPT/DeepSeek 等对话式 AI 生成 config.yaml 的内容，然后手动跑。
 
 ### 1. 安装依赖
 
@@ -150,6 +126,60 @@ tmux new-session -d -s bridge 'python3 bridge.py'
 ```bash
 pkill -f bridge.py && python3 bridge.py
 ```
+
+## ⚙️ 原理
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  QQ                                                        │
+│  你发消息 → NapCat (WebSocket :3001)                      │
+└──────────────────┬───────────────────────────────────────┘
+                   │ OneBot v11 协议
+                   ▼
+┌──────────────────────────────────────────────────────────┐
+│  Agent Channel Bridge (bridge.py)                         │
+│                                                          │
+│  1. 收到消息 → 解析类型（私聊/群聊/@）                      │
+│  2. 路由匹配 → 找到对应的 Worker                          │
+│  3. 打断发送 → Ctrl-C 当前任务 + send-keys 新消息           │
+│  4. 监听回复 → 累积 agent_message_chunk → step_finish 完整 │
+│  5. 回复发回 → WS → NapCat → QQ                           │
+└──────────────────┬───────────────────────────────────────┘
+                   │ ACP 协议 (JSON-RPC over stdio)
+                   ▼
+┌──────────────────────────────────────────────────────────┐
+│  AI Coding Agent (OpenCode / Claude Code 等)              │
+│                                                          │
+│  - 独立 tmux 进程，每个 Worker 一个                        │
+│  - 收到消息后自动执行（读文件、写代码、跑测试...）           │
+│  - 实时流式回复，bridge 自动收集完整回复                     │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 核心技术：ACP 协议
+
+ACP（Agent Communication Protocol）是一个 JSON-RPC over stdio 的协议，让外部程序能和 AI Agent 双向通信：
+
+| 方法 | 作用 |
+|------|------|
+| `initialize` | 握手，声明客户端能力 |
+| `session/create` | 创建新对话会话 |
+| `session/resume` | 恢复已有对话会话 |
+| `prompt` | 发送消息给 Agent（带图片/文件） |
+| `tool/execute` | 直接让 Agent 执行工具 |
+| `session/update` ← | **Agent 主动推送**（流式回复的关键） |
+
+**流式回复机制：**
+1. Bridge 发送 `prompt` 后，Agent 开始执行
+2. Agent 每生成一段文本，就发一个 `session/update`（`agent_message_chunk`）
+3. Agent 执行完毕，发 `step_finish`
+4. Bridge 收集所有 chunk 拼成完整回复，发回 QQ
+
+### Session 持久化
+
+- Worker 的会话映射保存在 `work_dir/.bridge_sessions.json`
+- Bridge 重启时会自动恢复所有 session（`session/resume`）
+- 通过 `/reset` 命令可以重置指定 session
 
 ## 📋 路由规则详解
 
