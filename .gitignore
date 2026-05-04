@@ -5,6 +5,7 @@ logs/
 pids/
 .env
 *.secret.yaml
+config.yaml
 
 # Build artifacts
 build/
