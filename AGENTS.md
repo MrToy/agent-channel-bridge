@@ -14,7 +14,6 @@ agent-channel-bridge/
 ├── Dockerfile                  # Docker 镜像构建
 ├── config.yaml                 # 本地配置文件（gitignored）
 ├── config.template.yaml        # 配置模板
-├── AGENTS.default.md           # 默认 AI 角色模板（用于开箱体验）
 ├── AGENTS.md                   # 👈 本文件 — AI 工作指南
 ├── README.md                   # 用户文档（修改时同步更新）
 ├── src/
