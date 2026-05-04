@@ -1,6 +1,3 @@
-default:
-  worker: my_agent
-
 applications:
   qq:
     type: napcat
@@ -9,12 +6,24 @@ applications:
     ws_url: ws://localhost:3001
 
 routes:
+  # 精确匹配（优先级最高）
   qq:private:YOUR_ADMIN_QQ:
     name: MyAgent
     worker: my_agent
     admin: true
   qq:group:YOUR_GROUP_ID:
     name: MyAgent
+    worker: my_agent
+
+  # 通配匹配（优先级低于精确）
+  qq:private:*:
+    name: 通用私聊
+    worker: my_agent
+  qq:group:*:
+    name: 通用群聊
+    worker: my_agent
+  *:*:*:
+    name: 兜底
     worker: my_agent
 
 workers:
