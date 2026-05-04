@@ -1,6 +1,7 @@
 """WorkerManager — manages lifecycle of all ACP workers."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -39,13 +40,12 @@ class WorkerManager:
         # Start all workers concurrently
         tasks = [self.workers[k].start() for k in self.workers]
         if tasks:
-            import asyncio
             await asyncio.gather(*tasks)
 
     async def send_message(self, worker_key: str, text: str, qq_msg: dict = None):
         w = self.workers.get(worker_key)
         if w:
-            await w.send_prompt(text, qq_msg)
+            await w.send_message(text, qq_msg)
 
     async def reset_for_msg(self, msg: dict) -> str:
         from .config import config, get_route
@@ -73,7 +73,7 @@ class WorkerManager:
         for key, w in self.workers.items():
             status = "✅" if w._connected else "❌"
             sid = w.session_id or "-"
-            sessions = len(w._route_sessions) if hasattr(w, '_route_sessions') else 0
+            sessions = len(w._route_sessions)
             start_cmd = getattr(w, 'start_command', '?') or '?'
             lines.append(f"  {status} {w.name or key} (session={sid[:16]}..., routes={sessions}) cmd={start_cmd}")
         return lines

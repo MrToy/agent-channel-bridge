@@ -1,7 +1,13 @@
 """Agent Channel Bridge — 将 QQ 消息路由到 AI Coding Agent."""
 
+import logging
+import sys
+
 __version__ = "1.0.0"
 
-from .config import load_config, get_route
-from .acp_worker import AcpWorker
-from .worker_manager import WorkerManager
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
+)

@@ -1,22 +1,24 @@
 default:
   worker: my_agent
+
 applications:
   qq:
     type: napcat
     bot_qq: 'YOUR_BOT_QQ'
-    bot_name: YourBot
+    bot_name: MyBot
     ws_url: ws://localhost:3001
+
 routes:
   qq:private:YOUR_ADMIN_QQ:
     name: MyAgent
     worker: my_agent
     admin: true
-  qq:group:YOUR_TEST_GROUP_ID:
+  qq:group:YOUR_GROUP_ID:
     name: MyAgent
     worker: my_agent
-# Add more routes as needed
+
 workers:
   my_agent:
     name: my_agent
     start_command: opencode acp
-    work_dir: /path/to/your/agent/workspace
+    work_dir: /path/to/agent/workspace

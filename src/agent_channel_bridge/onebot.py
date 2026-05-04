@@ -1,15 +1,16 @@
 """OneBot v11 protocol — message building, parsing, and API calls."""
 from __future__ import annotations
 
+import asyncio
+import base64 as _b64
 import json
 import logging
 import os
 import re
+import uuid
 from typing import Optional
 
-import websockets
-
-from .config import config, _ws_conn, _echo_futures
+from . import config as cfg
 
 log = logging.getLogger("onebot-bridge")
 
@@ -17,17 +18,14 @@ log = logging.getLogger("onebot-bridge")
 # ====== WS 回复 ======
 
 async def send_api_action(action: str, params: dict = None,
-                          ws: "websockets.WebSocketClientProtocol" = None) -> dict:
-    global _ws_conn
-    ws = ws or _ws_conn
+                          ws: object = None) -> dict:
+    ws = ws or cfg._ws_conn
     if ws is None:
         log.error("WS 未连接，无法发送 API 请求")
         return {}
-    import asyncio
-    import uuid
     echo_id = str(uuid.uuid4())[:12]
     fut = asyncio.get_event_loop().create_future()
-    _echo_futures[echo_id] = fut
+    cfg._echo_futures[echo_id] = fut
     payload = {"action": action, "params": params or {}, "echo": echo_id}
     await ws.send(json.dumps(payload, ensure_ascii=False))
     try:
@@ -39,63 +37,60 @@ async def send_api_action(action: str, params: dict = None,
 
 # ====== OneBot v11 消息段构建 ======
 
+# 标签格式（支持在 message 内任意位置，URL 可跨行）
+SEND_IMAGE_TAG_RE = re.compile(r"<img>(.*?)</img>", re.IGNORECASE | re.DOTALL)
+SEND_AUDIO_TAG_RE = re.compile(r"<audio>(.*?)</audio>", re.IGNORECASE | re.DOTALL)
+SEND_FILE_TAG_RE = re.compile(r"<file>(.*?)</file>", re.IGNORECASE | re.DOTALL)
+
+
 def _build_message_segments(text: str) -> list:
+    """将回复文本解析为 OneBot v11 消息段列表，支持标签格式"""
+    # 提取所有标签中的 URL（去除空白和换行）
+    image_urls = [u.strip().replace("\n", "").replace("\r", "") for u in SEND_IMAGE_TAG_RE.findall(text)]
+    audio_urls = [u.strip().replace("\n", "").replace("\r", "") for u in SEND_AUDIO_TAG_RE.findall(text)]
+    file_urls = [u.strip().replace("\n", "").replace("\r", "") for u in SEND_FILE_TAG_RE.findall(text)]
+
+    # 移除所有标签
+    clean = text
+    for pat in [SEND_IMAGE_TAG_RE, SEND_AUDIO_TAG_RE, SEND_FILE_TAG_RE]:
+        clean = pat.sub("", clean)
+    clean = clean.strip()
+
     segments = []
-    # Image: MEDIA:/path/to/file
-    medias = re.findall(r'MEDIA:([^\s]+)', text)
-    remaining = re.sub(r'MEDIA:[^\s]+\s*', '', text).strip()
-
-    for media_path in medias:
-        if os.path.isfile(media_path):
-            import base64
-            _, ext = os.path.splitext(media_path)
-            ext = ext.lstrip(".").lower()
-            if ext in ("jpg", "jpeg"):
-                mime = "image/jpeg"
-            elif ext == "png":
-                mime = "image/png"
-            elif ext == "gif":
-                mime = "image/gif"
-            elif ext in ("webp",):
-                mime = "image/webp"
-            else:
-                mime = "image/jpeg"
+    if clean:
+        segments.append({"type": "text", "data": {"text": clean[:2000]}})
+    for url in image_urls:
+        if os.path.isfile(url):
             try:
-                with open(media_path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                segments.append({
-                    "type": "image",
-                    "data": {"file": f"base64://{b64}"},
-                })
-                log.info(f"图片已转 base64: {media_path}")
+                with open(url, "rb") as f:
+                    raw = f.read()
+                b64 = _b64.b64encode(raw).decode()
+                segments.append({"type": "image", "data": {"file": f"base64://{b64}"}})
+                log.info(f"📎 本地图片已转为 base64 ({len(raw)} bytes)")
             except Exception as e:
-                log.warning(f"图片读取失败: {media_path} {e}")
-                segments.append({"type": "text", "data": {"text": f"[图片加载失败] "}})
+                log.warning(f"📎 本地图片读取失败: {e}")
+                segments.append({"type": "text", "data": {"text": f"[图片读取失败: {url}]"}})
         else:
-            segments.append({"type": "text", "data": {"text": f"[图片文件不存在: {media_path}] "}})
-
-    # File: FILE:/path/to/file
-    files = re.findall(r'FILE:([^\s]+)', remaining)
-    remaining = re.sub(r'FILE:[^\s]+\s*', '', remaining).strip()
-
-    for file_path in files:
-        if os.path.isfile(file_path):
-            import base64
-            with open(file_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            file_name = os.path.basename(file_path)
-            segments.append({
-                "type": "file",
-                "data": {"file": f"base64://{b64}", "name": file_name},
-            })
-            log.info(f"文件已转 base64: {file_path}")
+            segments.append({"type": "image", "data": {"url": url}})
+    for url in audio_urls:
+        segments.append({"type": "record", "data": {"url": url}})
+    for url in file_urls:
+        if os.path.isfile(url):
+            try:
+                with open(url, "rb") as f:
+                    raw = f.read()
+                fname = url.split("/")[-1][:64] or "file"
+                b64 = _b64.b64encode(raw).decode()
+                segments.append({"type": "file", "data": {"file": f"base64://{b64}", "name": fname}})
+                log.info(f"📎 本地文件已转为 base64 ({len(raw)} bytes, name={fname})")
+            except Exception as e:
+                log.warning(f"📎 本地文件读取失败: {e}")
+                segments.append({"type": "text", "data": {"text": f"[文件发送失败: {url}]"}})
         else:
-            segments.append({"type": "text", "data": {"text": f"[文件不存在: {file_path}] "}})
-
-    if remaining:
-        segments.append({"type": "text", "data": {"text": remaining}})
-
-    return segments or [{"type": "text", "data": {"text": ""}}]
+            segments.append({"type": "file", "data": {"url": url, "name": url.split("/")[-1][:64] or "file"}})
+    if not segments:
+        segments.append({"type": "text", "data": {"text": "(无内容)"}})
+    return segments
 
 
 async def send_group_msg(group_id: int, text: str) -> bool:
@@ -131,9 +126,17 @@ async def on_worker_reply(worker_key: str, agent_name: str,
 
     try:
         if qq_msg["type"] == "group":
+            if not from_id or from_id == "TEST_USER_ID":
+                log.warning(f"跳过测试群消息: from_id={from_id}")
+                return
             await send_group_msg(int(from_id), reply_text)
         elif qq_msg["type"] == "private":
+            if not user_id or user_id == 0:
+                log.warning(f"跳过测试私聊: user_id={qq_msg.get('user_id')}")
+                return
             await send_private_msg(user_id, reply_text)
+    except (ValueError, TypeError) as e:
+        log.warning(f"跳过无效消息 (user_id={qq_msg.get('user_id')} from_id={from_id}): {e}")
     except Exception as e:
         log.error(f"发送回复失败: {e}")
 
@@ -141,8 +144,7 @@ async def on_worker_reply(worker_key: str, agent_name: str,
 # ====== OneBot v11 协议解析 ======
 
 def parse_onebot(data: dict) -> Optional[dict]:
-    from .config import config
-    qq_cfg = config.get("applications", {}).get("qq", {})
+    qq_cfg = cfg.config.get("applications", {}).get("qq", {})
     bot_qq = str(qq_cfg.get("bot_qq", ""))
     bot_name = str(qq_cfg.get("bot_name", ""))
 
@@ -161,7 +163,7 @@ def parse_onebot(data: dict) -> Optional[dict]:
 
     if msg_type == "group":
         group_id = str(data.get("group_id", ""))
-        # Check for @mention
+        # Check for @mention via CQ at
         for mention in data.get("message", []):
             if mention.get("type") == "at":
                 target = str(mention.get("data", {}).get("qq", ""))

@@ -1,14 +1,12 @@
 """Configuration loading, routing, and chat logging."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from datetime import datetime
 from typing import Optional
 
-import websockets
 import yaml
 
 log = logging.getLogger("onebot-bridge")
@@ -18,8 +16,8 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 CHAT_LOG_DIR = os.path.join(BASE_DIR, "chat_logs")
 
 config: dict = {}
-_ws_conn: Optional["websockets.WebSocketClientProtocol"] = None
-_echo_futures: dict[str, "asyncio.Future"] = {}
+_ws_conn: Optional[object] = None
+_echo_futures: dict[str, object] = {}
 
 
 # ====== 配置加载 ======
@@ -27,7 +25,9 @@ _echo_futures: dict[str, "asyncio.Future"] = {}
 def load_config():
     global config
     with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+        loaded = yaml.safe_load(f)
+    config.clear()
+    config.update(loaded)
     log.info(f"配置已加载: {len(config.get('workers', {}))} 个 worker")
 
 

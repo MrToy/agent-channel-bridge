@@ -14,12 +14,9 @@ from .rpc_log import log_rpc
 
 log = logging.getLogger("onebot-bridge")
 
-_pending_requests: dict[str, asyncio.Future] = {}
-_session_buf: dict[str, str] = {}
+
 
 # ====== ACP Worker 通信 ======
-
-# moved from global scope: _pending_requests, _session_buf  # session_id → 累积文本
 
 
 class AcpWorker:
@@ -35,6 +32,9 @@ class AcpWorker:
         self._stderr_task: Optional[asyncio.Task] = None
         self._connected = False
         self._msg_id = 0
+        # 实例级变量，每个 Worker 独立，避免并发冲突
+        self._pending_requests: dict[str, asyncio.Future] = {}
+        self._session_buf: dict[str, str] = {}
         # 会话路由: route_key → session_id
         self._route_sessions: dict[str, str] = {}
         # sessionId → 最后一条 qq_msg（用于回复路由）
@@ -186,7 +186,7 @@ class AcpWorker:
                 self._prompt_msg_map.pop(msg_id, None)
             
             # 普通 RPC 回复
-            fut = _pending_requests.pop(msg_id, None)
+            fut = self._pending_requests.pop(msg_id, None)
             if fut and not fut.done():
                 if "result" in msg:
                     fut.set_result(msg["result"])
@@ -219,12 +219,12 @@ class AcpWorker:
                            "│", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╦", "╩", "╬"]:
                     clean = clean.replace(ch, "")
                 if clean.strip():
-                    _session_buf.setdefault(sid, "")
-                    _session_buf[sid] += clean
+                    self._session_buf.setdefault(sid, "")
+                    self._session_buf[sid] += clean
 
                     # 检测到 </message> → 立即发送
-                    if "</message>" in _session_buf[sid]:
-                        full = _session_buf.pop(sid, "")
+                    if "</message>" in self._session_buf[sid]:
+                        full = self._session_buf.pop(sid, "")
                         import re as _re
                         msgs = _re.findall(r'<message>(.*?)</message>', full, _re.DOTALL)
                         qq_msg = self._last_qq_msg.get(sid)
@@ -268,7 +268,7 @@ class AcpWorker:
             log.info(f"[{self.agent_name}] 📝 新 Session [{route_key}]: {sid}")
 
         self._last_qq_msg[sid] = qq_msg or {}
-        _session_buf.pop(sid, None)  # 清除上一轮残留
+        self._session_buf.pop(sid, None)  # 清除上一轮残留
 
         # 检查 session 是否忙碌（有正在处理的 prompt）
         if sid in self._prompt_msg_map.values():
@@ -280,7 +280,7 @@ class AcpWorker:
                 log.warning(f"[{self.agent_name}] session/close [{route_key}] 失败: {e}")
             del self._route_sessions[route_key]
             self._pending_msgs.pop(sid, None)
-            _session_buf.pop(sid, None)
+            self._session_buf.pop(sid, None)
             for mid in list(self._prompt_msg_map.keys()):
                 if self._prompt_msg_map[mid] == sid:
                     del self._prompt_msg_map[mid]
@@ -300,7 +300,7 @@ class AcpWorker:
             log.info(f"[{self.agent_name}] 📝 重建 Session [{route_key}]: {sid}")
 
         self._last_qq_msg[sid] = qq_msg or {}
-        _session_buf.pop(sid, None)  # 清除上一轮残留
+        self._session_buf.pop(sid, None)  # 清除上一轮残留
 
         await self._do_send_prompt(sid, route_key, text, qq_msg)
 
@@ -402,7 +402,7 @@ class AcpWorker:
         }
         log_rpc(self.agent_name, ">>", msg)
         fut = asyncio.get_event_loop().create_future()
-        _pending_requests[msg_id] = fut
+        self._pending_requests[msg_id] = fut
 
         if self.proc and self.proc.stdin:
             self.proc.stdin.write((json.dumps(msg) + "\n").encode())
@@ -411,8 +411,9 @@ class AcpWorker:
         try:
             return await asyncio.wait_for(fut, timeout=30)
         except asyncio.TimeoutError:
-            _pending_requests.pop(msg_id, None)
+            self._pending_requests.pop(msg_id, None)
             raise TimeoutError(f"[{self.agent_name}] RPC 超时: {method}")
+
 
     async def _send_notification(self, method: str, params: dict):
         msg = {

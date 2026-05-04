@@ -4,16 +4,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import sys
+import traceback
 from typing import Optional
 
 import websockets
 
-from .config import config, _ws_conn, _echo_futures, load_config, get_route, log_chat
+from . import config as cfg
 from .rpc_log import init_rpc_log
 from .onebot import on_worker_reply, send_group_msg, send_private_msg, parse_onebot
 from .worker_manager import WorkerManager
+from .config import get_route, log_chat
 
 log = logging.getLogger("onebot-bridge")
 
@@ -22,16 +22,12 @@ log = logging.getLogger("onebot-bridge")
 
 def is_admin(msg: dict) -> bool:
     route_key = f"qq:{msg['type']}:{msg['from_id']}"
-    routes = config.get("routes", {})
+    routes = cfg.config.get("routes", {})
     route = routes.get(route_key)
-    if route and route.get("admin"):
-        return True
-    user_id = msg.get("user_id", "")
-    return False
+    return bool(route and route.get("admin"))
 
 
 async def handle_admin_cmd(msg: dict, worker_mgr: WorkerManager) -> Optional[str]:
-    from .config import config
     t = msg["message"].strip()
     cmd = t.split()[0] if t else ""
 
@@ -94,13 +90,12 @@ async def process_message(ws, msg: dict, worker_mgr: WorkerManager):
 # ====== WS 主循环 ======
 
 async def main_loop(worker_mgr: WorkerManager):
-    global _ws_conn, _echo_futures
-    ws_url = config.get("applications", {}).get("qq", {}).get("ws_url", "ws://localhost:3001")
+    ws_url = cfg.config.get("applications", {}).get("qq", {}).get("ws_url", "ws://localhost:3001")
 
     while True:
         try:
             async with websockets.connect(ws_url, ping_interval=30) as ws:
-                _ws_conn = ws
+                cfg._ws_conn = ws
                 log.info(f"✅ 已连接 {ws_url}")
 
                 async for raw in ws:
@@ -111,8 +106,8 @@ async def main_loop(worker_mgr: WorkerManager):
 
                     # 1. WS API 回复（echo 匹配）
                     echo_id = data.get("echo", "")
-                    if echo_id and echo_id in _echo_futures:
-                        fut = _echo_futures.pop(echo_id, None)
+                    if echo_id and echo_id in cfg._echo_futures:
+                        fut = cfg._echo_futures.pop(echo_id, None)
                         if fut and not fut.done():
                             fut.set_result(data)
                         continue
@@ -128,7 +123,6 @@ async def main_loop(worker_mgr: WorkerManager):
             await asyncio.sleep(3)
         except Exception as e:
             log.error(f"WS 错误: {e}")
-            import traceback
             traceback.print_exc()
             await asyncio.sleep(5)
 
@@ -136,44 +130,23 @@ async def main_loop(worker_mgr: WorkerManager):
 # ====== 入口 ======
 
 async def main():
-    load_config()
+    cfg.load_config()
     init_rpc_log()
     log.info("=" * 45)
     log.info("🚀 OneBot Bridge (ACP 协议版)")
-    log.info(f"  WS: {config.get('applications', {}).get('qq', {}).get('ws_url', 'ws://localhost:3001')}")
-    log.info(f"  Workers: {len(config.get('workers', {}))}")
+    log.info(f"  WS: {cfg.config.get('applications', {}).get('qq', {}).get('ws_url', 'ws://localhost:3001')}")
+    log.info(f"  Workers: {len(cfg.config.get('workers', {}))}")
     log.info("  异步非阻塞 | IO 链路独立")
     log.info("=" * 45)
 
     worker_mgr = WorkerManager()
 
     log.info("启动 ACP agent workers...")
-    await worker_mgr.start_all(config, on_reply_cb=on_worker_reply)
+    await worker_mgr.start_all(cfg.config, on_reply_cb=on_worker_reply)
 
     log.info("当前 worker 状态:")
     for line in worker_mgr.status_lines():
         log.info(line)
-
-    # Auto test (8s delay)
-    async def auto_test():
-        await asyncio.sleep(8)
-        log.info("=" * 40)
-        log.info("🧪 自动发送测试消息到默认 worker...")
-        log.info("=" * 40)
-        text = "说一句话"
-        first_worker = next(iter(config.get("workers", {})), None)
-        if first_worker and worker_mgr.is_ready(first_worker):
-            await worker_mgr.send_message(first_worker, text, qq_msg={
-                "type": "private",
-                "user_id": "TEST_USER_ID",
-                "from_id": "TEST_USER_ID",
-                "message": text,
-            })
-            log.info("🧪 测试消息已发送，等待回复...")
-        else:
-            log.error(f"🧪 {first_worker or 'default worker'} 未就绪！")
-
-    asyncio.create_task(auto_test())
 
     await main_loop(worker_mgr)
 
