@@ -36,15 +36,32 @@ def load_config():
 def get_route(from_id: str, is_private: bool = False,
               is_mention: bool = False) -> Optional[dict]:
     defaults = config.get("default", {})
-    route_key = f"qq:private:{from_id}" if is_private else f"qq:group:{from_id}"
+    platform = "qq"
+    mtype = "private" if is_private else "group"
+    route_key = f"{platform}:{mtype}:{from_id}"
     routes = config.get("routes", {})
 
-    if route_key in routes:
-        if is_private or is_mention:
-            r = routes[route_key]
-            worker_name = r.get("worker", defaults.get("worker", ""))
-            return {"name": r.get("name", route_key), "worker": worker_name}
+    # 匹配顺序：精确 > 通配（优先级从高到低）
+    candidates = [
+        route_key,                                    # qq:group:123456789
+        f"{platform}:{mtype}:*",                      # qq:group:*
+        f"{platform}:*:{from_id}",                     # qq:*:123456789
+        f"{platform}:*:*",                             # qq:*:*
+        f"*:{mtype}:{from_id}",                       # *:group:123456789
+        f"*:{mtype}:*",                               # *:group:*
+        f"*:*:{from_id}",                              # *:*:123456789
+        f"*:*:*",                                     # *:*:*
+    ]
 
+    for key in candidates:
+        if key in routes:
+            route = routes[key]
+            # 私聊直接匹配，群聊需要 @ 才触发
+            if is_private or is_mention:
+                worker_name = route.get("worker", defaults.get("worker", ""))
+                return {"name": route.get("name", key), "worker": worker_name}
+
+    # 兜底：无匹配路由时走 default
     if is_private:
         worker_name = defaults.get("worker", "")
         if worker_name:
